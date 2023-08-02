@@ -1,5 +1,4 @@
 # Weakly-Video-Anomaly-Detection
-Weakly Video Anomaly Detection
 
 This repository is based on a thesis work on video anomaly detection.
 
