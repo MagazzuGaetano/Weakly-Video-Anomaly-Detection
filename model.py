@@ -349,11 +349,11 @@ class Model(nn.Module):
 
         scores = scores.view(bs, ncrops, -1).mean(1)
         scores = scores.unsqueeze(dim=2)
-
-        # multiply anomaly score for the video classification score
-        z = video_score.unsqueeze(1).expand((video_score.size(0), scores.size(1), 1))
-        scores = scores * z
         # [32, 32, 1]
+
+        # multiply anomaly score for the video classification score (not used right now!)
+        # z = video_score.unsqueeze(1).expand((video_score.size(0), scores.size(1), 1))
+        # scores = scores * z
 
         normal_features = features[0 : self.batch_size * ncrops]  # [320, 32, 1024]
         normal_scores = scores[0 : self.batch_size]
