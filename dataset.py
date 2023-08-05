@@ -6,7 +6,6 @@ import os
 from utils import (
     norm_features,
     process_feat,
-    process_feat_2,
     sample_m_clips,
     sample_subsets_special,
 )
@@ -135,7 +134,6 @@ class Dataset(data.Dataset):
 
             # sample m clips evenly or loop the video if is too short
             sampled_features = sample_m_clips(features, self.n_sample_clips)
-            # sampled_features = sample_subsets_special(features, L=16, T=3)
             return sampled_features, label
 
     def get_label(self):

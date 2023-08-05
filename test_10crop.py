@@ -59,22 +59,20 @@ def test(dataloader, model, args, viz, device, epoch, print_metrics=True):
             clip_pred = torch.cat((clip_pred, sig))
 
         if args.dataset == "shanghai":
-            vad_gt = np.load("list/gt/vad/gt-sh.npy")  # I3D e C3D: gt-sh.npy
+            vad_gt = np.load("list/gt/vad/gt-sh.npy")
             vc_gt = np.load("list/gt/vc/gt-sh.npy")
+
         elif args.dataset == "ucf":
             if args.feat_extractor == "i3d":
                 vad_gt = np.load("list/gt/vad/gt-ucf(i3d).npy")
-                # gt-ucf.npy(scaricato), vad/gt-ucf(i3d).npy
             else:
                 vad_gt = np.load("list/gt/vad/gt-ucf_c3d_new.npy")
 
             vc_gt = np.load("list/gt/vc/gt-ucf.npy")
+
         elif args.dataset == "xdv":
             if args.feat_extractor == "i3d":
-                vad_gt = np.load(
-                    "list/gt/vad/gt-xdv(scaricato).npy"
-                )  # solo per features scaricate dall'autore
-                # vad_gt = np.load('list/gt/vad/gt-xdv.npy')
+                vad_gt = np.load("list/gt/vad/gt-xdv(scaricato).npy")
             else:
                 vad_gt = np.load("list/gt/vad/gt-xdv.npy")
 
@@ -84,7 +82,8 @@ def test(dataloader, model, args, viz, device, epoch, print_metrics=True):
         clip_pred = np.repeat(np.array(clip_pred), 16)
         clip_rec_auc, clip_pr_auc = compute_metrics(list(vad_gt), clip_pred)
 
-        # if epoch == 1000 or epoch == 2000 or epoch == 5000:
+        # to plot predicted scores
+        # if epoch == 1000:
         #     plt.figure()
         #     plt.plot(clip_pred)
         #     plt.plot(vad_gt)

@@ -16,42 +16,6 @@ import os
 from sklearn.model_selection import ParameterGrid
 
 
-# start_patience = 10000 # 30
-# patience = start_patience
-# def early_stopping(best_auc, curr_auc, patience, start_patience = 20):
-#   if curr_auc >= best_auc:
-#     patience = start_patience
-#   else:
-#     patience -= 1
-#   return patience
-
-
-def collate_fn_padd(batch):
-    """
-    Padds batch of variable length
-
-    note: it converts things ToTensor manually here since the ToTensor transform
-    assume it takes in images rather than arbitrary tensors.
-    """
-    features = [x[0] for x in batch]
-    labels = [x[1] for x in batch]
-
-    ## get sequence lengths
-    lengths = [t.shape[0] for t in features]
-    max_length = int(np.asarray(lengths).mean())
-
-    sampled_features = []
-    for feat in features:
-        feat = feat.transpose(1, 0, 2)
-        sampled_feat = sample_m_clips(feat, m=max_length)
-        sampled_features.append(sampled_feat)
-
-    sampled_features = np.asarray(sampled_features)
-    sampled_features = torch.from_numpy(sampled_features)
-
-    return sampled_features, labels
-
-
 if __name__ == "__main__":
     import time
 
@@ -63,43 +27,18 @@ if __name__ == "__main__":
     viz = VisdomLinePlotter(env_name=args.dataset)
 
     # params = {
-    #   'vad_lr': [1e-3],
-    #   'vad_weight_decay': [5e-4],
-    #   'batch_size': [8], #32,16
-    #   'vc_alpha': [1e-3, 1e-4, 1e-5],
-    #   'vc_lr': [1e-3, 1e-4, 1e-5],
-    #   'vc_weight_decay': [5e-3, 5e-4, 5e-5],
-    #   'epochs' : [100],
-    #   'n_sample_clips': [16, 24, 32, 48], #64, 96
-    #   'sap_hidden_size': [512, 256, 128],
-    # }
-
-    # params = {
     #   'vad_lr': [1e-3, 1e-4],
     #   'vad_weight_decay': [5e-3, 5e-4],
-    #   'batch_size': [4],
+    #   'batch_size': [32],
     #   'vc_alpha': [1e-3, 1e-4],
     #   'vc_lr': [1e-3, 1e-4],
     #   'vc_weight_decay': [5e-3, 5e-4],
     #   'epochs' : [100],
-    #   'n_sample_clips': [96, 128],
+    #   'n_sample_clips': [32, 64, 128],
     #   'sap_hidden_size': [512, 256, 128],
     # }
+
     params = {}
-
-    # params = {
-    #   #'seed' : [0,1,2,3,4],
-    #   'batch_size': [32],
-    #   'vad_lr': [1e-3],
-    #   'vad_weight_decay': [5e-4],
-    #   'vc_alpha': [1e-4],
-    #   'vc_lr': [1e-4],
-    #   'vc_weight_decay': [5e-4],
-    #   'epochs' : [5000],
-    #   'n_sample_clips': [32],
-    #   'sap_hidden_size': [256]
-    # }
-
     param_grid = ParameterGrid(params)
 
     for param in param_grid:
@@ -117,7 +56,8 @@ if __name__ == "__main__":
         # clear cache
         torch.cuda.empty_cache()
 
-        SEED = 0  # dict_['seed'] # sht:0, ucf:4, xdv:1(c3d), 2(i3d)
+        # sht:0, ucf:4, xdv: 1(c3d), xdv: 2(i3d)
+        SEED = 0  # dict_['seed']
         set_seeds(SEED)
 
         # override args parameters with current configuration
@@ -191,7 +131,7 @@ if __name__ == "__main__":
         )
 
         # continue training
-        checkpoint_path = "./ckpt/rtfmX-i3d.pkl"
+        checkpoint_path = args.pretrained_ckpt
         ckpt_step = -1
         if os.path.exists(checkpoint_path):
             checkpoint = torch.load(checkpoint_path, map_location=device)

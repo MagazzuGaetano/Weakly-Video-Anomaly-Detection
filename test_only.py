@@ -28,11 +28,7 @@ if __name__ == "__main__":
     )
 
     model = Model(args.feature_size, args.batch_size)
-    # checkpoint = torch.load('/home/ubuntu/Desktop/RTFM/checkpoint(addestrati)/prova4/rtfm9175-i3d.pkl')
-
     checkpoint = torch.load("./ckpt/rtfm335-i3d.pkl")
-    # checkpoint = torch.load('./ckpt/shanghai_best_ckpt.pkl')
-    # checkpoint = torch.load('./ckpt/ucf-i3d-ckpt.pkl')
     model.load_state_dict(checkpoint["model_state_dict"])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
