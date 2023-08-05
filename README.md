@@ -4,8 +4,10 @@ This repository is based on a thesis work on video anomaly detection.
 
 # Run the code
 specify args or change default values in option.py
+```shell
 - python -m visdom.server
 - python main.py
+```
 
 # Citations
 
