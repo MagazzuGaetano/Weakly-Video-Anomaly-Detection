@@ -5,6 +5,62 @@ import random
 import os
 
 from visdom import Visdom
+from sklearn.metrics import auc, roc_curve, average_precision_score
+
+
+def select_rgb_list(dataset, test_mode=True, is_normal=True):
+    out_list = []
+    rgb_list_file = ""
+
+    if dataset == "shanghai":
+        if test_mode:
+            rgb_list_file = "list/shanghai-i3d-test-10crop.list"
+        else:
+            rgb_list_file = "list/shanghai-i3d-train-10crop.list"
+
+    elif dataset == "ucf":
+        if test_mode:
+            rgb_list_file = "list/ucf-i3d-test.list"
+        else:
+            rgb_list_file = "list/ucf-i3d.list"
+
+    elif dataset == "xdv":
+        if test_mode:
+            rgb_list_file = "list/xdv_rgb_test.list"
+        else:
+            rgb_list_file = "list/xdv_rgb.list"
+
+    # read the rgb list
+    with open(rgb_list_file) as f:
+        rgb_list_file = f.readlines()
+        out_list = rgb_list_file
+
+    if test_mode is False:
+        if dataset == "shanghai":
+            if is_normal:
+                out_list = rgb_list_file[63:]
+            else:
+                out_list = rgb_list_file[:63]
+
+        elif dataset == "ucf":
+            if is_normal:
+                out_list = rgb_list_file[810:]
+            else:
+                out_list = rgb_list_file[:810]
+
+        elif dataset == "xdv":
+            if is_normal:
+                out_list = [f for f in rgb_list_file if "_label_A" in f]
+                out_list = [
+                    f for f in out_list if "v=8cTqh9tMz_I__#1_label_A" not in f
+                ]  # discard corrupted files
+            else:
+                out_list = [f for f in rgb_list_file if "_label_A" not in f]
+
+        print(len(out_list))
+        print("{} list for {}".format("normal" if is_normal else "abnormal", dataset))
+
+    return out_list
 
 
 def random_extract(feat, t_max):
@@ -90,7 +146,7 @@ class Visualizer(object):
             win=str(name),
             opts=dict(title=name),
             update=None if x == 0 else "append",
-            **kwargs
+            **kwargs,
         )
         self.index[name] = x + 1
 
@@ -109,11 +165,9 @@ class Visualizer(object):
 
 def norm_features(feat):
     # single clip features normalized (L2)
-    # for i in range(feat.shape[0]):
-    #    feat[i,:,:] = feat[i,:,:] / np.linalg.norm(feat[i,:,:])
-    # feat = feat / np.linalg.norm(feat) # worked for I3D and C3D(SHT only)
+
+    # feat = feat / np.linalg.norm(feat) # worked for I3D and C3D (SHT only)
     # feat = feat / np.linalg.norm(feat, axis=-1, keepdims=True) # per C3D (UCF e XDV)
-    # print(feat.min(), feat.max())
     return feat
 
 
@@ -152,7 +206,6 @@ def sample_m_clips(features, m=32):
 
 
 def sample_subsets_special(features, L=32, T=3):
-    # implementazione Continuos Sparse Sampling Strategy copiata da https://github.com/shengyangsun/LSTC_VAD
     ncrops, nclips, feat_dim = features.shape  # (ncrops, nclips, D)
 
     kk = nclips - T
@@ -191,66 +244,17 @@ def set_seeds(seed):
     # torch.backends.cudnn.deterministic=True
 
 
-def minmax_norm(act_map, min_val=None, max_val=None):
-    if min_val is None or max_val is None:
-        relu = torch.nn.ReLU()
-        max_val = relu(torch.max(act_map, dim=0)[0])
-        min_val = relu(torch.min(act_map, dim=0)[0])
+def compute_metrics(gt, pred, print_metrics=True):
+    fpr, tpr, th = roc_curve(gt, pred)
+    rec_auc = auc(fpr, tpr)
 
-    delta = max_val - min_val
-    delta[delta <= 0] = 1
-    ret = (act_map - min_val) / delta
+    if print_metrics:
+        print("auc : " + str(rec_auc))
 
-    ret[ret > 1] = 1
-    ret[ret < 0] = 0
+    # 'micro', 'samples', 'weighted', 'macro'
+    ap = average_precision_score(gt, pred, pos_label=1)
 
-    return ret
+    if print_metrics:
+        print("ap : " + str(ap))
 
-
-def modelsize(model, input, type_size=4):
-    # check GPU utilisation
-    para = sum([np.prod(list(p.size())) for p in model.parameters()])
-    print(
-        "Model {} : params: {:4f}M".format(
-            model._get_name(), para * type_size / 1000 / 1000
-        )
-    )
-
-    input_ = input.clone()
-    input_.requires_grad_(requires_grad=False)
-
-    mods = list(model.modules())
-    out_sizes = []
-
-    for i in range(1, len(mods)):
-        m = mods[i]
-        if isinstance(m, nn.ReLU):
-            if m.inplace:
-                continue
-        out = m(input_)
-        out_sizes.append(np.array(out.size()))
-        input_ = out
-
-    total_nums = 0
-    for i in range(len(out_sizes)):
-        s = out_sizes[i]
-        nums = np.prod(np.array(s))
-        total_nums += nums
-
-    print(
-        "Model {} : intermedite variables: {:3f} M (without backward)".format(
-            model._get_name(), total_nums * type_size / 1000 / 1000
-        )
-    )
-    print(
-        "Model {} : intermedite variables: {:3f} M (with backward)".format(
-            model._get_name(), total_nums * type_size * 2 / 1000 / 1000
-        )
-    )
-
-
-def save_best_record(test_info, file_path):
-    fo = open(file_path, "w")
-    fo.write("epoch: {}\n".format(test_info["epoch"][-1]))
-    fo.write(str(test_info["test_AUC"][-1]))
-    fo.close()
+    return rec_auc, ap

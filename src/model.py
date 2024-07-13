@@ -162,7 +162,7 @@ class Aggregate(nn.Module):
                 padding=1,
             ),
             nn.ReLU(),
-            bn(int(len_feature / 4))
+            bn(int(len_feature / 4)),
             # nn.dropout(0.7)
         )
         self.conv_2 = nn.Sequential(
@@ -175,7 +175,7 @@ class Aggregate(nn.Module):
                 padding=2,
             ),
             nn.ReLU(),
-            bn(int(len_feature / 4))
+            bn(int(len_feature / 4)),
             # nn.dropout(0.7)
         )
         self.conv_3 = nn.Sequential(
@@ -188,7 +188,7 @@ class Aggregate(nn.Module):
                 padding=4,
             ),
             nn.ReLU(),
-            bn(int(len_feature / 4))
+            bn(int(len_feature / 4)),
             # nn.dropout(0.7),
         )
         self.conv_4 = nn.Sequential(
@@ -211,7 +211,7 @@ class Aggregate(nn.Module):
                 padding=1,
             ),  # should we keep the bias? # bias=False
             nn.ReLU(),
-            bn(len_feature)
+            bn(len_feature),
             # nn.dropout(0.7)
         )
 
@@ -270,19 +270,26 @@ class SelfAttentivePooling(nn.Module):
         attention_weights = F.tanh(lin_out.bmm(v_view).squeeze())
         attention_weights = self.drop_out(attention_weights)
 
+        if inputs.shape[1] == 1:
+            attention_weights = attention_weights.unsqueeze(1)
+
         attention_weights_normalized = F.softmax(attention_weights, 1)
         utter_rep = torch.sum(inputs * attention_weights_normalized.unsqueeze(2), dim=1)
         return utter_rep
 
 
 class Model(nn.Module):
-    def __init__(self, n_features, batch_size, sap_hidden_size, use_sap=False):
+    def __init__(
+        self, n_features, batch_size, k, m, sap_hidden_size, sap=False, multitask=False
+    ):
         super(Model, self).__init__()
         self.batch_size = batch_size
-        self.num_segments = 32
-        self.k_abn = self.num_segments // 10
-        self.k_nor = self.num_segments // 10
-        self.use_sap = use_sap
+        self.k_abn = k
+        self.k_nor = k
+        self.m = m
+        self.sap = sap
+        self.multitask = multitask
+        self.flatten = nn.Flatten()
 
         self.Aggregate = Aggregate(len_feature=n_features)
         self.fc1 = nn.Linear(n_features, 512)
@@ -316,6 +323,7 @@ class Model(nn.Module):
 
         # [32, 10, 32, 3, 1024]
         out = inputs
+
         bs, ncrops, t, f = out.size()  # [32, 10, 32, 1024]
         out = out.view(-1, t, f)  # [320, 32, 1024]
 
@@ -324,16 +332,23 @@ class Model(nn.Module):
         out = self.drop_out(out)
         features = out  # [320, 32, 1024]
 
-        # aggregate the temporal dimension with a sap layer
-        if self.use_sap:
-            video_score = self.SAP(features)  # [320, 1024]
-            video_score = self.relu(self.fc4(video_score))
-            video_score = self.drop_out(video_score)
-            video_score = self.relu(self.fc5(video_score))
-            video_score = self.drop_out(video_score)
+        if self.multitask:
+            # aggregate the temporal dimension with a sap layer
+            if self.sap:
+                aggregated_features = self.SAP(features)  # [320, 1024]
+            else:
+                aggregated_features = features.mean(1)  # [320, 1024]
+                # gap = nn.AdaptiveAvgPool2d((1, None))
+                # aggregated_features = gap(features) #[320, 1024]
+                # aggregated_features = self.flatten(features) #[320, 32*1024]
+
+            aggregated_features = self.relu(self.fc4(aggregated_features))
+            aggregated_features = self.drop_out(aggregated_features)
+            aggregated_features = self.relu(self.fc5(aggregated_features))
+            aggregated_features = self.drop_out(aggregated_features)
 
             # video classification scores for normal videos + abnormal videos
-            video_score = self.sigmoid(self.fc6(video_score))  # [320, 1]
+            video_score = self.sigmoid(self.fc6(aggregated_features))  # [320, 1]
 
             # average score for 10 crops
             video_score = video_score.view(bs, ncrops, -1).mean(1)  # [32, 1]
@@ -349,92 +364,112 @@ class Model(nn.Module):
 
         scores = scores.view(bs, ncrops, -1).mean(1)
         scores = scores.unsqueeze(dim=2)
-        # [32, 32, 1]
 
-        # multiply anomaly score for the video classification score (not used right now!)
-        # z = video_score.unsqueeze(1).expand((video_score.size(0), scores.size(1), 1))
-        # scores = scores * z
+        if self.multitask:
+            # multiply anomaly score for the video classification score
+            z = video_score.unsqueeze(1).expand(
+                (video_score.size(0), scores.size(1), 1)
+            )
+            scores = scores * z
+            # [32, 32, 1]
 
-        normal_features = features[0 : self.batch_size * ncrops]  # [320, 32, 1024]
-        normal_scores = scores[0 : self.batch_size]
+        score_abnormal = None
+        score_normal = None
+        feat_select_abn = None
+        feat_select_normal = None
+        feat_select_abn = None
+        feat_select_abn = None
+        feat_select_abn = None
+        feat_select_abn = None
+        feat_magnitudes = None
 
-        abnormal_features = features[self.batch_size * ncrops :]  # [320, 32, 1024]
-        abnormal_scores = scores[self.batch_size :]
+        if self.training:
+            normal_features = features[0 : self.batch_size * ncrops]  # [320, 32, 1024]
+            normal_scores = scores[0 : self.batch_size]
 
-        # [320, 32, 1024]
-        feat_magnitudes = torch.norm(features, p=2, dim=2)
-        # [320, 32, 1]
-        feat_magnitudes = feat_magnitudes.view(bs, ncrops, -1).mean(1)
-        # [32, 32]
+            abnormal_features = features[self.batch_size * ncrops :]  # [320, 32, 1024]
+            abnormal_scores = scores[self.batch_size :]
 
-        nfea_magnitudes = feat_magnitudes[
-            0 : self.batch_size
-        ]  # normal feature magnitudes
-        afea_magnitudes = feat_magnitudes[
-            self.batch_size :
-        ]  # abnormal feature magnitudes
-        n_size = nfea_magnitudes.shape[0]
+            # [320, 32, 1024]
+            feat_magnitudes = torch.norm(features, p=2, dim=2)
+            # [320, 32, 1]
+            feat_magnitudes = feat_magnitudes.view(bs, ncrops, -1).mean(1)
+            # [32, 32]
 
-        if nfea_magnitudes.shape[0] == 1:  # this is for inference, the batch size is 1
-            afea_magnitudes = nfea_magnitudes
-            abnormal_scores = normal_scores
-            abnormal_features = normal_features
+            nfea_magnitudes = feat_magnitudes[
+                0 : self.batch_size
+            ]  # normal feature magnitudes
+            afea_magnitudes = feat_magnitudes[
+                self.batch_size :
+            ]  # abnormal feature magnitudes
+            n_size = nfea_magnitudes.shape[0]
 
-        select_idx = torch.ones_like(nfea_magnitudes)
-        select_idx = self.drop_out(select_idx)
+            if (
+                nfea_magnitudes.shape[0] == 1
+            ):  # this is for inference, the batch size is 1
+                afea_magnitudes = nfea_magnitudes
+                abnormal_scores = normal_scores
+                abnormal_features = normal_features
 
-        #######  process abnormal videos -> select top3 feature magnitude  #######
-        afea_magnitudes_drop = afea_magnitudes * select_idx
-        idx_abn = torch.topk(afea_magnitudes_drop, k_abn, dim=1)[1]
-        idx_abn_feat = idx_abn.unsqueeze(2).expand([-1, -1, abnormal_features.shape[2]])
+            select_idx = torch.ones_like(nfea_magnitudes)
+            select_idx = self.drop_out(select_idx)
 
-        abnormal_features = abnormal_features.view(n_size, ncrops, t, f)
-        abnormal_features = abnormal_features.permute(1, 0, 2, 3)
-
-        total_select_abn_feature = torch.zeros(0, device=inputs.device)
-        for abnormal_feature in abnormal_features:
-            feat_select_abn = torch.gather(
-                abnormal_feature, 1, idx_abn_feat
-            )  # top 3 features magnitude in abnormal bag
-            total_select_abn_feature = torch.cat(
-                (total_select_abn_feature, feat_select_abn)
+            #######  process abnormal videos -> select top3 feature magnitude  #######
+            afea_magnitudes_drop = afea_magnitudes * select_idx
+            idx_abn = torch.topk(afea_magnitudes_drop, k_abn, dim=1)[1]
+            idx_abn_feat = idx_abn.unsqueeze(2).expand(
+                [-1, -1, abnormal_features.shape[2]]
             )
 
-        idx_abn_score = idx_abn.unsqueeze(2).expand([-1, -1, abnormal_scores.shape[2]])
-        score_abnormal = torch.mean(
-            torch.gather(abnormal_scores, 1, idx_abn_score), dim=1
-        )  # top 3 scores in abnormal bag based on the top-3 magnitude
+            abnormal_features = abnormal_features.view(n_size, ncrops, t, f)
+            abnormal_features = abnormal_features.permute(1, 0, 2, 3)
 
-        ####### process normal videos -> select top3 feature magnitude #######
-        select_idx_normal = torch.ones_like(nfea_magnitudes)
-        select_idx_normal = self.drop_out(select_idx_normal)
-        nfea_magnitudes_drop = nfea_magnitudes * select_idx_normal
-        idx_normal = torch.topk(nfea_magnitudes_drop, k_nor, dim=1)[1]
-        idx_normal_feat = idx_normal.unsqueeze(2).expand(
-            [-1, -1, normal_features.shape[2]]
-        )
+            total_select_abn_feature = torch.zeros(0, device=inputs.device)
+            for abnormal_feature in abnormal_features:
+                feat_select_abn = torch.gather(
+                    abnormal_feature, 1, idx_abn_feat
+                )  # top 3 features magnitude in abnormal bag
+                total_select_abn_feature = torch.cat(
+                    (total_select_abn_feature, feat_select_abn)
+                )
 
-        normal_features = normal_features.view(n_size, ncrops, t, f)
-        normal_features = normal_features.permute(1, 0, 2, 3)
+            idx_abn_score = idx_abn.unsqueeze(2).expand(
+                [-1, -1, abnormal_scores.shape[2]]
+            )
+            score_abnormal = torch.mean(
+                torch.gather(abnormal_scores, 1, idx_abn_score), dim=1
+            )  # top 3 scores in abnormal bag based on the top-3 magnitude
 
-        total_select_nor_feature = torch.zeros(0, device=inputs.device)
-        for nor_fea in normal_features:
-            feat_select_normal = torch.gather(
-                nor_fea, 1, idx_normal_feat
-            )  # top 3 features magnitude in normal bag (hard negative)
-            total_select_nor_feature = torch.cat(
-                (total_select_nor_feature, feat_select_normal)
+            ####### process normal videos -> select top3 feature magnitude #######
+            select_idx_normal = torch.ones_like(nfea_magnitudes)
+            select_idx_normal = self.drop_out(select_idx_normal)
+            nfea_magnitudes_drop = nfea_magnitudes * select_idx_normal
+            idx_normal = torch.topk(nfea_magnitudes_drop, k_nor, dim=1)[1]
+            idx_normal_feat = idx_normal.unsqueeze(2).expand(
+                [-1, -1, normal_features.shape[2]]
             )
 
-        idx_normal_score = idx_normal.unsqueeze(2).expand(
-            [-1, -1, normal_scores.shape[2]]
-        )
-        score_normal = torch.mean(
-            torch.gather(normal_scores, 1, idx_normal_score), dim=1
-        )  # top 3 scores in normal bag
+            normal_features = normal_features.view(n_size, ncrops, t, f)
+            normal_features = normal_features.permute(1, 0, 2, 3)
 
-        feat_select_abn = total_select_abn_feature
-        feat_select_normal = total_select_nor_feature
+            total_select_nor_feature = torch.zeros(0, device=inputs.device)
+            for nor_fea in normal_features:
+                feat_select_normal = torch.gather(
+                    nor_fea, 1, idx_normal_feat
+                )  # top 3 features magnitude in normal bag (hard negative)
+                total_select_nor_feature = torch.cat(
+                    (total_select_nor_feature, feat_select_normal)
+                )
+
+            idx_normal_score = idx_normal.unsqueeze(2).expand(
+                [-1, -1, normal_scores.shape[2]]
+            )
+            score_normal = torch.mean(
+                torch.gather(normal_scores, 1, idx_normal_score), dim=1
+            )  # top 3 scores in normal bag
+
+            feat_select_abn = total_select_abn_feature
+            feat_select_normal = total_select_nor_feature
 
         return (
             score_abnormal,

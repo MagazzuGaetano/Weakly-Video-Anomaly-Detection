@@ -1,10 +1,8 @@
-import numpy as np
 import torch
-import torch.nn.functional as F
+
+from torch.nn import MSELoss
 
 torch.set_default_tensor_type("torch.FloatTensor")
-from torch.nn import L1Loss
-from torch.nn import MSELoss
 
 
 def sparsity(arr, batch_size, lamda2):
@@ -85,9 +83,8 @@ class RTFM_loss(torch.nn.Module):
 
 
 class VideoClassificationLoss(torch.nn.Module):
-    def __init__(self, alpha):
+    def __init__(self):
         super(VideoClassificationLoss, self).__init__()
-        self.alpha = alpha
         self.criterion = torch.nn.BCELoss()
 
     def forward(self, video_score, nlabel, alabel):
@@ -100,7 +97,8 @@ class VideoClassificationLoss(torch.nn.Module):
         loss_cls = self.criterion(
             video_score, label
         )  # BCE loss in the video score space
-        return self.alpha * loss_cls
+
+        return loss_cls
 
 
 def train(
@@ -138,9 +136,7 @@ def train(
             scores_nor_abn_bag,
             _,
             video_score,
-        ) = model(
-            input
-        )  # b*T  x D
+        ) = model(input)  # b*T  x D
 
         scores = scores.view(batch_size * T * 2, -1)
         scores = scores.squeeze()
@@ -150,7 +146,7 @@ def train(
         nlabel = nlabel[0:batch_size]
         alabel = alabel[0:batch_size]
 
-        loss_rtfm, loss1, loss2 = RTFM_loss(1e-4, 100)(
+        loss_rtfm, loss1, loss2 = RTFM_loss(1e-4, model.m)(
             score_normal,
             score_abnormal,
             nlabel,
@@ -161,31 +157,28 @@ def train(
         loss_sparse = sparsity(abn_scores, batch_size, 8e-3)
         loss_smooth = smooth(abn_scores, 8e-4)
         loss_video = (
-            VideoClassificationLoss(vc_alpha)(video_score, nlabel, alabel)
-            if version == "sample_SAP"
+            VideoClassificationLoss()(video_score, nlabel, alabel)
+            if "multitask" in version
             else 0
         )
 
-        cost = loss_rtfm + loss_smooth + loss_sparse + loss_video
+        cost = loss_rtfm + loss_smooth + loss_sparse + (vc_alpha * loss_video)
 
         # Plotting Metrics
         if print_metrics:
             viz.plot("loss", "train", "Total Train Loss", epoch, cost.item())
-            viz.plot(
-                "loss_cls", "train", "Train Classification Loss", epoch, loss1.item()
-            )
-            viz.plot("loss_rtfm", "train", "Train RTFM Loss", epoch, loss2.item())
-            viz.plot(
-                "loss_sparsity",
-                "train",
-                "Train Loss Sparsity",
-                epoch,
-                loss_sparse.item(),
-            )
-            viz.plot(
-                "loss_smooth", "train", "Train Loss Smooth", epoch, loss_smooth.item()
-            )
-            # viz.plot('loss_vc', 'train', 'Train Video Classification Loss', epoch, loss_video.item())
+            # viz.plot('loss_cls', 'train', 'Train Classification Loss', epoch, loss1.item())
+            # viz.plot('loss_rtfm', 'train', 'Train RTFM Loss', epoch, loss2.item())
+            # viz.plot('loss_sparsity', 'train', 'Train Loss Sparsity', epoch, loss_sparse.item())
+            # viz.plot('loss_smooth', 'train', 'Train Loss Smooth', epoch, loss_smooth.item())
+            if "multitask" in version:
+                viz.plot(
+                    "loss_vc",
+                    "train",
+                    "Train Video Classification Loss",
+                    epoch,
+                    loss_video.item(),
+                )
 
         optimizer.zero_grad()
         cost.backward()

@@ -1,107 +1,157 @@
+import os
+
 import matplotlib.pyplot as plt
-import torch
-from sklearn.metrics import (
-    auc,
-    roc_curve,
-    precision_recall_curve,
-    average_precision_score,
-)
 import numpy as np
-import gc
-import pandas as pd
+import torch
+from torch.utils.data import DataLoader
+
+import src.option as option
+from src.dataset import Dataset
+from src.model import Model
+from src.test import test
+from src.utils import VisdomLinePlotter, norm_features, select_rgb_list
 
 
-def compute_metrics(gt, pred):
+def test_inference_time(dataloader, model, device):
+    starter, ender = (
+        torch.cuda.Event(enable_timing=True),
+        torch.cuda.Event(enable_timing=True),
+    )
+    avg_inference_time = []
 
-    fpr, tpr, th = roc_curve(gt, pred)
-    rec_auc = auc(fpr, tpr)
-    print("auc : " + str(rec_auc))
+    # WARM UP
+    dummy_input = torch.randn(1, 10, 1, 1024, dtype=torch.float).to(device)
+    for _ in range(10):
+        model(inputs=dummy_input)
 
-    # precision, recall, th = precision_recall_curve(gt, pred)
-    # pr_auc = auc(recall, precision)
-    # print('pr_auc : ' + str(pr_auc))
+    # random input for testing inference I3D feature
+    input = torch.randn(1, 10, np.random.randint(64, 6250), 1024, dtype=torch.float).to(
+        device
+    )
 
-    # print('precision : ' + str(np.asarray(precision).mean()))
-    # print('recall : ' + str(np.asarray(recall).mean()))
-    # print('pr_auc : ' + str(pr_auc))
-
-    # 'micro', 'samples', 'weighted', 'macro'
-    ap = average_precision_score(gt, pred, pos_label=1)
-    print("ap : " + str(ap))
-
-    return rec_auc, ap
-
-
-def test(dataloader, model, args, viz, device, epoch, print_metrics=True):
     with torch.no_grad():
         model.eval()
-        clip_pred = torch.zeros(0, device=device)
-        video_pred = (
-            torch.zeros(0, device=device) if args.version == "sample_SAP" else None
-        )
 
-        for i, input in enumerate(dataloader):
-            input = input.to(device)  # B x T x 10 x D
+        input = next(iter(dataloader))
+        input = input.to(device)  # B x T x 10 x D
+        input = input.permute(0, 2, 1, 3)  # B x 10 x T x D
+
+        if input.size()[1] == 1:
+            input = input.permute(1, 0, 2, 3)  # 1 x B x T x D
+
+        input = input[:, :, :2, :]
+
+        # repeat the process 30 times
+        for i in range(30):
+            starter.record()
+
+            model(inputs=input)
+
+            ender.record()
+
+            # WAIT FOR GPU SYNC
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+
+            curr_time = starter.elapsed_time(ender)
+
+            avg_inference_time.append((curr_time / input.shape[2]))
+
+    X = np.asarray(avg_inference_time)
+    print(X.mean(), X.std())
+
+
+def plot_gt(file_name, feature_path, gt_path, args):
+    with torch.no_grad():
+        model.eval()
+
+        # read features
+        if args.dataset == "xdv":
+            single_crop_features = []
+            for i in range(5):
+                features = np.load(
+                    os.path.join(
+                        feature_path,
+                        file_name.replace(".npy", "") + "__{}.npy".format(i),
+                    ),
+                    allow_pickle=True,
+                )
+                features = np.array(features, dtype=np.float32)
+                features = norm_features(features)
+                single_crop_features.append(features)
+
+            features = np.asarray(single_crop_features)
+        else:
+            features = np.load(os.path.join(feature_path, file_name), allow_pickle=True)
+            features = np.array(features, dtype=np.float32)
+            features = norm_features(features)
+
+        input = torch.from_numpy(features).unsqueeze(0)
+        input = input.to(device)  # B x T x 10 x D
+
+        if args.dataset != "xdv":
             input = input.permute(0, 2, 1, 3)  # B x 10 x T x D
 
-            if input.size()[1] == 1:
-                input = input.permute(1, 0, 2, 3)  # 1 x B x T x D
+        _, _, _, _, _, _, anomaly_scores, _, _, _, video_score = model(inputs=input)
 
-            _, _, _, _, _, _, logits, _, _, _, video_score = model(inputs=input)
+        anomaly_scores = torch.squeeze(anomaly_scores, 1)
+        anomaly_scores = torch.mean(anomaly_scores, 0)
 
-            if args.version == "sample_SAP":
-                video_score = torch.squeeze(video_score, 1)
-                video_pred = torch.cat((video_pred, video_score))
+        if "multitask" in args.version:
+            video_score = torch.squeeze(video_score, 1)
 
-            logits = torch.squeeze(logits, 1)
-            logits = torch.mean(logits, 0)
-            sig = logits  # T x 1
-            clip_pred = torch.cat((clip_pred, sig))
+        anomaly_scores = list(anomaly_scores.cpu().detach().numpy())
+        anomaly_scores = np.repeat(np.array(anomaly_scores), 16)
 
-        if args.dataset == "shanghai":
-            vad_gt = np.load("list/gt/vad/gt-sh.npy")
-            vc_gt = np.load("list/gt/vc/gt-sh.npy")
+        gt = np.load(os.path.join(gt_path, file_name))
 
-        elif args.dataset == "ucf":
-            if args.feat_extractor == "i3d":
-                vad_gt = np.load("list/gt/vad/gt-ucf(i3d).npy")
-            else:
-                vad_gt = np.load("list/gt/vad/gt-ucf_c3d_new.npy")
+        plt.plot(anomaly_scores, label="predicted scores")
+        plt.plot(gt, label="gt scores")
+        plt.ylabel("anomaly score")
+        plt.title(file_name.replace(".npy", ".mp4"))
+        plt.ylim((0, 1.1))
+        plt.legend()
+        plt.show()
 
-            vc_gt = np.load("list/gt/vc/gt-ucf.npy")
 
-        elif args.dataset == "xdv":
-            if args.feat_extractor == "i3d":
-                vad_gt = np.load("list/gt/vad/gt-xdv(scaricato).npy")
-            else:
-                vad_gt = np.load("list/gt/vad/gt-xdv.npy")
+if __name__ == "__main__":
+    args = option.parser.parse_args()
 
-            vc_gt = np.load("list/gt/vc/gt-xdv.npy")
+    viz = VisdomLinePlotter(env_name=args.dataset)
 
-        clip_pred = list(clip_pred.cpu().detach().numpy())
-        clip_pred = np.repeat(np.array(clip_pred), 16)
-        clip_rec_auc, clip_pr_auc = compute_metrics(list(vad_gt), clip_pred)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # to plot predicted scores
-        # if epoch == 1000:
-        #     plt.figure()
-        #     plt.plot(clip_pred)
-        #     plt.plot(vad_gt)
-        #     plt.show()
+    # SHT, UCF features are stored as a single .npy file for all the 10 crops (for a single video, shape: T x 10 x 1024)
+    # XDV features are stored as a single .npy file for each of the 5 crop (for a single video, shape: T x 5 x 1024)
 
-        # Plotting Metrics
-        if print_metrics:
-            viz.plot("clip_auc", "test", "Test AUC (CLIP)", epoch, clip_rec_auc)
-            viz.plot("clip_pr_auc", "test", "Test PR_AUC (CLIP)", epoch, clip_pr_auc)
+    test_loader = DataLoader(
+        Dataset(args, list=select_rgb_list(args.dataset, test_mode=True), mode="test"),
+        batch_size=(5 if args.dataset == "xdv" else 1),
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=False,
+    )
 
-        if args.version == "sample_SAP":
-            video_pred = list(video_pred.cpu().detach().numpy())
-            video_rec_auc, video_pr_auc = compute_metrics(list(vc_gt), video_pred)
+    sap = "sap" in args.version
+    multitask = "multitask" in args.version
 
-            if print_metrics:
-                viz.plot("video_auc", "test", "Test AUC (VIDEO)", epoch, video_rec_auc)
-                viz.plot(
-                    "video_pr_auc", "test", "Test PR_AUC (VIDEO)", epoch, video_pr_auc
-                )
+    model = Model(
+        args.feature_size,
+        args.batch_size,
+        args.k,
+        args.m,
+        args.sap_hidden_size,
+        sap,
+        multitask,
+    )
 
-        return clip_rec_auc, clip_pr_auc
+    checkpoint = torch.load(args.pretrained_ckpt)
+
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model = model.to(device)
+
+    clip_auc, clip_ap, _, _ = test(
+        test_loader, model, args, viz, device, -1, print_metrics=True
+    )
+
+    test_inference_time(test_loader, model, device)
