@@ -107,3 +107,53 @@ def test(dataloader, model, args, viz, device, epoch, print_metrics=True):
                 )
 
         return clip_rec_auc, clip_pr_auc, video_rec_auc, video_pr_auc
+
+
+def test_inference_time(dataloader, model, device):
+    starter, ender = (
+        torch.cuda.Event(enable_timing=True),
+        torch.cuda.Event(enable_timing=True),
+    )
+    avg_inference_time = []
+
+    # WARM UP
+    dummy_input = torch.randn(1, 10, 1, 1024, dtype=torch.float).to(device)
+    for _ in range(10):
+        model(inputs=dummy_input)
+
+    # random input for testing inference I3D feature
+    input = torch.randn(1, 10, np.random.randint(64, 6250), 1024, dtype=torch.float).to(
+        device
+    )
+
+    with torch.no_grad():
+        model.eval()
+
+        input = next(iter(dataloader))
+        input = input.to(device)  # B x T x 10 x D
+        input = input.permute(0, 2, 1, 3)  # B x 10 x T x D
+
+        if input.size()[1] == 1:
+            input = input.permute(1, 0, 2, 3)  # 1 x B x T x D
+
+        input = input[:, :, :2, :]
+
+        # repeat the process 30 times
+        for i in range(30):
+            starter.record()
+
+            model(inputs=input)
+
+            ender.record()
+
+            # WAIT FOR GPU SYNC
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+
+            curr_time = starter.elapsed_time(ender)
+
+            avg_inference_time.append((curr_time / input.shape[2]))
+
+    X = np.asarray(avg_inference_time)
+
+    return (X.mean(), X.std())
