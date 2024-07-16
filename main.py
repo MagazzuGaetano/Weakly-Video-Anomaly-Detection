@@ -14,7 +14,7 @@ import src.option as option
 from src.dataset import Dataset
 from src.model import Model
 from src.test import test
-from src.train import train
+from src.train import RTFM_loss, VideoClassificationLoss, train
 from src.utils import VisdomLinePlotter, select_rgb_list, set_seeds
 
 
@@ -74,7 +74,7 @@ def save_checkpoint(step, model, optimizer, args, save_model):
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
             },
-            "./ckpt/" + args.model_name + "{}-i3d.pkl".format(step),
+            "./ckpt/" + args.model_name + "{}-{}.pkl".format(step, args.feat_extractor),
         )
 
 
@@ -95,6 +95,9 @@ if __name__ == "__main__":
 
     global viz
     viz = VisdomLinePlotter(env_name=args.dataset)
+
+    rtfm_loss = RTFM_loss(1e-4, args.m)
+    vc_loss = VideoClassificationLoss()
 
     # tuning UCF
     params = {
@@ -147,8 +150,6 @@ if __name__ == "__main__":
         # already explored configurations
         hyperparams = plot_config.loc[:, param_cols].to_dict(orient="records")
 
-    print(len(param_grid))
-
     for i, dict_ in enumerate(param_grid):
         if train_mode == "tuning":
             dict_copy = dict_.copy()
@@ -162,7 +163,7 @@ if __name__ == "__main__":
         # clear cache
         torch.cuda.empty_cache()
 
-        SEED = 0  # dict_['seed'] # sht:0, ucf:4, xdv:1(c3d), 2(i3d)
+        SEED = 0
         set_seeds(SEED)
 
         # override args parameters with current configuration
@@ -266,6 +267,8 @@ if __name__ == "__main__":
                 step,
                 args.version,
                 args.vc_alpha,
+                rtfm_loss,
+                vc_loss,
                 print_metrics=print_metrics,
             )
 

@@ -67,7 +67,8 @@ class RTFM_loss(torch.nn.Module):
 
         label = label.cuda()
 
-        loss_cls = self.criterion(score, label)  # BCE loss in the score space
+        # BCE loss in the score space (Video Anomaly Detection)
+        loss_cls = self.criterion(score, label)
 
         loss_abn = torch.abs(
             self.margin - torch.norm(torch.mean(feat_a, dim=1), p=2, dim=1)
@@ -94,9 +95,8 @@ class VideoClassificationLoss(torch.nn.Module):
         # normal video scores + abnormal video scores
         video_score = video_score.squeeze()
 
-        loss_cls = self.criterion(
-            video_score, label
-        )  # BCE loss in the video score space
+        # BCE loss in the video score space (Video Classification)
+        loss_cls = self.criterion(video_score, label)
 
         return loss_cls
 
@@ -112,6 +112,8 @@ def train(
     epoch,
     version,
     vc_alpha,
+    rtfm_loss,
+    vc_loss,
     print_metrics=True,
 ):
     with torch.set_grad_enabled(True):
@@ -120,23 +122,23 @@ def train(
         ninput, nlabel = next(nloader)
         ainput, alabel = next(aloader)
 
-        input = torch.cat((ninput, ainput), 0).to(device)
+        input = torch.cat((ninput, ainput), 0).to(device)  # 2B x 10 x T X D
 
-        T = input.size()[2]  # 2B x 10 x T X D
+        T = input.size()[2]
 
         (
             score_abnormal,
             score_normal,
             feat_select_abn,
             feat_select_normal,
-            feat_abn_bottom,
-            feat_normal_bottom,
+            _,
+            _,
             scores,
-            scores_nor_bottom,
-            scores_nor_abn_bag,
+            _,
+            _,
             _,
             video_score,
-        ) = model(input)  # b*T  x D
+        ) = model(input)
 
         scores = scores.view(batch_size * T * 2, -1)
         scores = scores.squeeze()
@@ -146,7 +148,7 @@ def train(
         nlabel = nlabel[0:batch_size]
         alabel = alabel[0:batch_size]
 
-        loss_rtfm, loss1, loss2 = RTFM_loss(1e-4, model.m)(
+        loss_rtfm, _, _ = rtfm_loss(
             score_normal,
             score_abnormal,
             nlabel,
@@ -156,10 +158,9 @@ def train(
         )
         loss_sparse = sparsity(abn_scores, batch_size, 8e-3)
         loss_smooth = smooth(abn_scores, 8e-4)
+
         loss_video = (
-            VideoClassificationLoss()(video_score, nlabel, alabel)
-            if "multitask" in version
-            else 0
+            vc_loss(video_score, nlabel, alabel) if "multitask" in version else 0
         )
 
         cost = loss_rtfm + loss_smooth + loss_sparse + (vc_alpha * loss_video)
