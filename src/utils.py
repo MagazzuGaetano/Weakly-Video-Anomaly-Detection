@@ -8,59 +8,16 @@ from visdom import Visdom
 from sklearn.metrics import auc, roc_curve, average_precision_score
 
 
-def select_rgb_list(dataset, test_mode=True, is_normal=True):
-    out_list = []
-    rgb_list_file = ""
+def norm_features(feat, args):
+    # single clip features normalized (L2)
+    if args.dataset == "shanghai":
+        feat = feat / np.linalg.norm(feat)
+    elif args.dataset == "ucf" or args.dataset == "xdv":
+        feat = feat / np.linalg.norm(feat, axis=-1, keepdims=True)
+    else:
+        raise ValueError("Unknown dataset: {}".format(args.dataset))
 
-    if dataset == "shanghai":
-        if test_mode:
-            rgb_list_file = "list/shanghai-i3d-test-10crop.list"
-        else:
-            rgb_list_file = "list/shanghai-i3d-train-10crop.list"
-
-    elif dataset == "ucf":
-        if test_mode:
-            rgb_list_file = "list/ucf-i3d-test.list"
-        else:
-            rgb_list_file = "list/ucf-i3d.list"
-
-    elif dataset == "xdv":
-        if test_mode:
-            rgb_list_file = "list/xdv_rgb_test.list"
-        else:
-            rgb_list_file = "list/xdv_rgb.list"
-
-    # read the rgb list
-    with open(rgb_list_file) as f:
-        rgb_list_file = f.readlines()
-        out_list = rgb_list_file
-
-    if test_mode is False:
-        if dataset == "shanghai":
-            if is_normal:
-                out_list = rgb_list_file[63:]
-            else:
-                out_list = rgb_list_file[:63]
-
-        elif dataset == "ucf":
-            if is_normal:
-                out_list = rgb_list_file[810:]
-            else:
-                out_list = rgb_list_file[:810]
-
-        elif dataset == "xdv":
-            if is_normal:
-                out_list = [f for f in rgb_list_file if "_label_A" in f]
-                out_list = [
-                    f for f in out_list if "v=8cTqh9tMz_I__#1_label_A" not in f
-                ]  # discard corrupted files
-            else:
-                out_list = [f for f in rgb_list_file if "_label_A" not in f]
-
-        print(len(out_list))
-        print("{} list for {}".format("normal" if is_normal else "abnormal", dataset))
-
-    return out_list
+    return feat
 
 
 def random_extract(feat, t_max):
@@ -85,6 +42,19 @@ def pad(feat, min_len):
         return feat
 
 
+def process_feat(feat, length):
+    new_feat = np.zeros((length, feat.shape[1])).astype(np.float32)
+
+    r = np.linspace(0, len(feat), length + 1, dtype=np.int32)
+    for i in range(length):
+        if r[i] != r[i + 1]:
+            new_feat[i, :] = np.mean(feat[r[i] : r[i + 1], :], 0)
+        else:
+            new_feat[i, :] = feat[r[i], :]
+
+    return new_feat
+
+
 def process_feat_2(feat, length, is_random=True):
     feat = feat.transpose(1, 0, 2)
     if len(feat) > length:
@@ -96,91 +66,6 @@ def process_feat_2(feat, length, is_random=True):
         out_feat = pad(feat, length)
     out_feat = out_feat.transpose(1, 0, 2)
     return out_feat
-
-
-class VisdomLinePlotter(object):
-    """Plots to Visdom"""
-
-    def __init__(self, env_name="main"):
-        self.viz = Visdom()
-        self.env = env_name
-        self.plots = {}
-
-    def plot(self, var_name, split_name, title_name, x, y):
-        if var_name not in self.plots:
-            self.plots[var_name] = self.viz.line(
-                X=np.array([x, x]),
-                Y=np.array([y, y]),
-                env=self.env,
-                opts=dict(
-                    legend=[split_name],
-                    title=title_name,
-                    xlabel="Epochs",
-                    ylabel=var_name,
-                ),
-            )
-        else:
-            self.viz.line(
-                X=np.array([x]),
-                Y=np.array([y]),
-                env=self.env,
-                win=self.plots[var_name],
-                name=split_name,
-                update="append",
-            )
-
-
-class Visualizer(object):
-    def __init__(self, env="default", **kwargs):
-        self.vis = visdom.Visdom(env=env, **kwargs)
-        self.index = {}
-
-    def plot_lines(self, name, y, **kwargs):
-        """
-        self.plot('loss', 1.00)
-        """
-        x = self.index.get(name, 0)
-        self.vis.line(
-            Y=np.array([y]),
-            X=np.array([x]),
-            win=str(name),
-            opts=dict(title=name),
-            update=None if x == 0 else "append",
-            **kwargs,
-        )
-        self.index[name] = x + 1
-
-    def disp_image(self, name, img):
-        self.vis.image(img=img, win=name, opts=dict(title=name))
-
-    def lines(self, name, line, X=None):
-        if X is None:
-            self.vis.line(Y=line, win=name)
-        else:
-            self.vis.line(X=X, Y=line, win=name)
-
-    def scatter(self, name, data):
-        self.vis.scatter(X=data, win=name)
-
-
-def norm_features(feat):
-    # single clip features normalized (L2)
-
-    # feat = feat / np.linalg.norm(feat) # worked for I3D and C3D (SHT only)
-    # feat = feat / np.linalg.norm(feat, axis=-1, keepdims=True) # per C3D (UCF e XDV)
-    return feat
-
-
-def process_feat(feat, length):
-    new_feat = np.zeros((length, feat.shape[1])).astype(np.float32)
-
-    r = np.linspace(0, len(feat), length + 1, dtype=np.int32)
-    for i in range(length):
-        if r[i] != r[i + 1]:
-            new_feat[i, :] = np.mean(feat[r[i] : r[i + 1], :], 0)
-        else:
-            new_feat[i, :] = feat[r[i], :]
-    return new_feat
 
 
 def sample_m_clips(features, m=32):
@@ -251,10 +136,184 @@ def compute_metrics(gt, pred, print_metrics=True):
     if print_metrics:
         print("auc : " + str(rec_auc))
 
-    # 'micro', 'samples', 'weighted', 'macro'
     ap = average_precision_score(gt, pred, pos_label=1)
 
     if print_metrics:
         print("ap : " + str(ap))
 
     return rec_auc, ap
+
+
+def select_rgb_list(dataset, test_mode=True, is_normal=True):
+    out_list = []
+    rgb_list_file = ""
+
+    if dataset == "shanghai":
+        if test_mode:
+            rgb_list_file = "list/shanghai-i3d-test-10crop.list"
+        else:
+            rgb_list_file = "list/shanghai-i3d-train-10crop.list"
+
+    elif dataset == "ucf":
+        if test_mode:
+            rgb_list_file = "list/ucf-i3d-test.list"
+        else:
+            rgb_list_file = "list/ucf-i3d.list"
+
+    elif dataset == "xdv":
+        if test_mode:
+            rgb_list_file = "list/xdv_rgb_test.list"
+        else:
+            rgb_list_file = "list/xdv_rgb.list"
+
+    # read the rgb list
+    with open(rgb_list_file) as f:
+        rgb_list_file = f.readlines()
+        out_list = rgb_list_file
+
+    if test_mode is False:
+        if dataset == "shanghai":
+            if is_normal:
+                out_list = rgb_list_file[63:]
+            else:
+                out_list = rgb_list_file[:63]
+
+        elif dataset == "ucf":
+            if is_normal:
+                out_list = rgb_list_file[810:]
+            else:
+                out_list = rgb_list_file[:810]
+
+        elif dataset == "xdv":
+            if is_normal:
+                out_list = [f for f in rgb_list_file if "_label_A" in f]
+                out_list = [
+                    f for f in out_list if "v=8cTqh9tMz_I__#1_label_A" not in f
+                ]  # discard corrupted files
+            else:
+                out_list = [f for f in rgb_list_file if "_label_A" not in f]
+
+        print(len(out_list))
+        print("{} list for {}".format("normal" if is_normal else "abnormal", dataset))
+
+    return out_list
+
+
+def plot_gt(file_name, feature_path, gt_path, model, device, args):
+    import matplotlib.pyplot as plt
+
+    with torch.no_grad():
+        model.eval()
+
+        # read features
+        if args.dataset == "xdv":
+            single_crop_features = []
+            for i in range(5):
+                features = np.load(
+                    os.path.join(
+                        feature_path,
+                        file_name.replace(".npy", "") + "__{}.npy".format(i),
+                    ),
+                    allow_pickle=True,
+                )
+                features = np.array(features, dtype=np.float32)
+                features = norm_features(features)
+                single_crop_features.append(features)
+
+            features = np.asarray(single_crop_features)
+        else:
+            features = np.load(os.path.join(feature_path, file_name), allow_pickle=True)
+            features = np.array(features, dtype=np.float32)
+            features = norm_features(features)
+
+        input = torch.from_numpy(features).unsqueeze(0)
+        input = input.to(device)  # B x T x 10 x D
+
+        if args.dataset != "xdv":
+            input = input.permute(0, 2, 1, 3)  # B x 10 x T x D
+
+        _, _, _, _, _, _, anomaly_scores, _, _, _, video_score = model(inputs=input)
+
+        anomaly_scores = torch.squeeze(anomaly_scores, 1)
+        anomaly_scores = torch.mean(anomaly_scores, 0)
+
+        if "multitask" in args.version:
+            video_score = torch.squeeze(video_score, 1)
+
+        anomaly_scores = list(anomaly_scores.cpu().detach().numpy())
+        anomaly_scores = np.repeat(np.array(anomaly_scores), 16)
+
+        gt = np.load(os.path.join(gt_path, file_name))
+
+        plt.plot(anomaly_scores, label="predicted scores")
+        plt.plot(gt, label="gt scores")
+        plt.ylabel("anomaly score")
+        plt.title(file_name.replace(".npy", ".mp4"))
+        plt.ylim((0, 1.1))
+        plt.legend()
+        plt.show()
+
+
+class VisdomLinePlotter(object):
+    """Plots to Visdom"""
+
+    def __init__(self, env_name="main"):
+        self.viz = Visdom()
+        self.env = env_name
+        self.plots = {}
+
+    def plot(self, var_name, split_name, title_name, x, y):
+        if var_name not in self.plots:
+            self.plots[var_name] = self.viz.line(
+                X=np.array([x, x]),
+                Y=np.array([y, y]),
+                env=self.env,
+                opts=dict(
+                    legend=[split_name],
+                    title=title_name,
+                    xlabel="Epochs",
+                    ylabel=var_name,
+                ),
+            )
+        else:
+            self.viz.line(
+                X=np.array([x]),
+                Y=np.array([y]),
+                env=self.env,
+                win=self.plots[var_name],
+                name=split_name,
+                update="append",
+            )
+
+
+class Visualizer(object):
+    def __init__(self, env="default", **kwargs):
+        self.vis = visdom.Visdom(env=env, **kwargs)
+        self.index = {}
+
+    def plot_lines(self, name, y, **kwargs):
+        """
+        self.plot('loss', 1.00)
+        """
+        x = self.index.get(name, 0)
+        self.vis.line(
+            Y=np.array([y]),
+            X=np.array([x]),
+            win=str(name),
+            opts=dict(title=name),
+            update=None if x == 0 else "append",
+            **kwargs,
+        )
+        self.index[name] = x + 1
+
+    def disp_image(self, name, img):
+        self.vis.image(img=img, win=name, opts=dict(title=name))
+
+    def lines(self, name, line, X=None):
+        if X is None:
+            self.vis.line(Y=line, win=name)
+        else:
+            self.vis.line(X=X, Y=line, win=name)
+
+    def scatter(self, name, data):
+        self.vis.scatter(X=data, win=name)

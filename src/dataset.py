@@ -51,6 +51,7 @@ class Dataset(data.Dataset):
                 divided_features.append(feature)
 
             divided_features = np.array(divided_features, dtype=np.float32)
+
             return divided_features, video_label
 
         # csss(continuos sparse sampling strategy)
@@ -62,6 +63,7 @@ class Dataset(data.Dataset):
             sampled_features = sample_subsets_special(
                 features, L=self.L, T=self.T
             ).mean(axis=2)
+
             return sampled_features, video_label
 
         elif self.version == "clips_multitask_sap" or self.version == "clips_multitask":
@@ -70,7 +72,6 @@ class Dataset(data.Dataset):
 
             # sample m clips evenly or loop the video if is too short
             sampled_features = sample_m_clips(features, self.n_sample_clips)
-            # sampled_features = sample_subsets_special(features, L=16, T=3)
 
             return sampled_features, video_label
 
