@@ -3,7 +3,7 @@ import argparse
 parser = argparse.ArgumentParser(description="RTFM")
 
 parser.add_argument(
-    "--dataset", default="shanghai", help="dataset to train on (default: )"
+    "--dataset", default="shanghai", help="dataset to train on (default: shanghai)"
 )  # shanghai, ucf, xdv
 parser.add_argument("--feat-extractor", default="i3d", choices=["i3d", "c3d"])
 parser.add_argument(
